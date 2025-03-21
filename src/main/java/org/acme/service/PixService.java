@@ -261,7 +261,7 @@ public class PixService {
 
 
     /**
-     * Consulta uma cobrança Pix pelo TxID
+     * Consulta uma cobrança Pix pelo TxID no meu banco de dados (via Repository)
      * 
      * @param txid ID da transação
      * @return Objeto PixImediato se encontrado, null caso contrário
