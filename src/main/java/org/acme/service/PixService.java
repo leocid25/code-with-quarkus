@@ -1,5 +1,7 @@
 package org.acme.service;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.math.BigDecimal;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -9,6 +11,7 @@ import java.time.Duration;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.UUID;
 
@@ -19,6 +22,14 @@ import org.acme.model.PixInfoAdicional;
 import org.acme.repository.PixComVencimentoRepository;
 import org.acme.repository.PixImediatoRepository;
 import org.jboss.logging.Logger;
+
+import com.google.zxing.BarcodeFormat;
+import com.google.zxing.EncodeHintType;
+import com.google.zxing.MultiFormatWriter;
+import com.google.zxing.WriterException;
+import com.google.zxing.client.j2se.MatrixToImageWriter;
+import com.google.zxing.common.BitMatrix;
+import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel;
 
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
@@ -601,31 +612,172 @@ public class PixService {
     /**
      * Gera uma imagem de QR Code a partir de um texto
      * 
-     * @param texto Texto para gerar o QR Code (Pix Copia e Cola)
+     * @param pixCopiaECola Texto Pix Copia e Cola para gerar o QR Code
      * @return Array de bytes com a imagem PNG do QR Code
      * @throws Exception Se ocorrer algum erro na geração
      */
-    public byte[] gerarQrCodeImage(String texto) throws Exception {
-        // Importações e implementação da geração de QR Code
-        // Nota: É necessário adicionar dependências como zxing no pom.xml
-        // Exemplo simples, sem implementação completa:
+    public byte[] gerarQrCodeImage(String pixCopiaECola) throws Exception {
+        LOG.info("Gerando QR Code para Pix Copia e Cola");
 
-        /*
-         * QRCodeWriter qrCodeWriter = new QRCodeWriter();
-         * BitMatrix bitMatrix = qrCodeWriter.encode(texto, BarcodeFormat.QR_CODE, 300,
-         * 300);
-         * 
-         * ByteArrayOutputStream pngOutputStream = new ByteArrayOutputStream();
-         * MatrixToImageWriter.writeToStream(bitMatrix, "PNG", pngOutputStream);
-         * 
-         * return pngOutputStream.toByteArray();
-         */
+        // Validar se o texto Pix Copia e Cola foi fornecido
+        if (pixCopiaECola == null || pixCopiaECola.trim().isEmpty()) {
+            throw new IllegalArgumentException("Texto Pix Copia e Cola não fornecido");
+        }
 
-        // Implementação temporária para exemplo (não funcional):
-        LOG.info("Gerando QR Code para: " + texto);
-        throw new UnsupportedOperationException("Implementação da geração de QR Code não disponível. " +
-                "Adicione a dependência zxing-core e zxing-javase ao projeto e implemente este método.");
+        int width = 300; // Largura do QR Code em pixels
+        int height = 300; // Altura do QR Code em pixels
+        String fileType = "png";
+
+        // Configuração para correção de erros do QR Code
+        HashMap<EncodeHintType, Object> hintMap = new HashMap<>();
+        hintMap.put(EncodeHintType.ERROR_CORRECTION, ErrorCorrectionLevel.M); // Nível médio de correção de erros
+        hintMap.put(EncodeHintType.MARGIN, 2); // Margem do QR Code
+        hintMap.put(EncodeHintType.CHARACTER_SET, "UTF-8"); // Codificação de caracteres
+
+        try {
+            // Gerar a matriz de bits do QR Code
+            BitMatrix matrix = new MultiFormatWriter().encode(
+                    pixCopiaECola,
+                    BarcodeFormat.QR_CODE,
+                    width,
+                    height,
+                    hintMap);
+
+            // Converter a matriz em bytes de imagem
+            ByteArrayOutputStream pngOutputStream = new ByteArrayOutputStream();
+            MatrixToImageWriter.writeToStream(matrix, fileType, pngOutputStream);
+
+            return pngOutputStream.toByteArray();
+
+        } catch (WriterException | IOException e) {
+            LOG.error("Erro ao gerar QR Code: " + e.getMessage(), e);
+            throw new Exception("Falha na geração do QR Code: " + e.getMessage(), e);
+        }
     }
+
+    /**
+     * Gera o texto para o QR Code PIX (PIX Copia e Cola)
+     * 
+     * @param pix Objeto Pix contendo os dados da cobrança
+     * @return String contendo o texto formatado para o QR Code PIX
+     */
+    // public String gerarTextoQrCodePix(Pix pix) {
+    // // Preencher os campos obrigatórios
+    // Integer chaveLength = pix.getChave().length();
+    // Integer merchantNameFieldSize = (pix.getRecebedorNome() != null) ?
+    // pix.getRecebedorNome().length() : 0;
+
+    // // Limitar o nome do recebedor a 25 caracteres
+    // String nomeRecebedor = (pix.getRecebedorNome() != null) ?
+    // pix.getRecebedorNome() : "";
+    // if (nomeRecebedor.length() > 25) {
+    // nomeRecebedor = nomeRecebedor.substring(0, 25);
+    // merchantNameFieldSize = 25;
+    // }
+
+    // // Formatar o tamanho do nome do recebedor (2 dígitos)
+    // String nomeRecebedorSizeStr = String.format("%02d", merchantNameFieldSize);
+
+    // // Cidade do recebedor (máximo 15 caracteres)
+    // String cidade = "BRASILIA"; // Valor padrão, substitua se disponível no
+    // objeto pix
+    // if (pix.getCidade() != null && !pix.getCidade().isEmpty()) {
+    // cidade = pix.getCidade();
+    // if (cidade.length() > 15) {
+    // cidade = cidade.substring(0, 15);
+    // }
+    // }
+    // String cidadeSizeStr = String.format("%02d", cidade.length());
+
+    // // Valor do pagamento
+    // String valorStr = pix.getValorOriginal().toString();
+    // String valorSizeStr = String.format("%02d", valorStr.length());
+
+    // // Gerar TxID
+    // String txId = pix.getTxid();
+
+    // // Tamanho do campo merchant account information
+    // Integer merchantAccountInfoSize = chaveLength + 8 + 14; // 8 para os
+    // subcampos e 14 é o tamanho de
+    // // "br.gov.bcb.pix"
+
+    // // Construir o payload
+    // StringBuilder payload = new StringBuilder();
+
+    // // Payload Format Indicator (ID: 00): obrigatório, valor fixo: 01
+    // payload.append("00").append("02").append("01");
+
+    // // Merchant Account Information (ID: 26): obrigatório para PIX
+    // payload.append("26")
+    // .append(String.format("%02d", merchantAccountInfoSize))
+    // .append("0014").append("br.gov.bcb.pix")
+    // .append("01").append(String.format("%02d", chaveLength))
+    // .append(pix.getChave());
+
+    // // Merchant Category Code (ID: 52): obrigatório, valor fixo: 0000
+    // payload.append("52").append("04").append("0000");
+
+    // // Transaction Currency (ID: 53): obrigatório, valor fixo para Real: 986
+    // payload.append("53").append("03").append("986");
+
+    // // Transaction Amount (ID: 54): obrigatório se valor fixo
+    // payload.append("54").append(valorSizeStr).append(valorStr);
+
+    // // Country Code (ID: 58): obrigatório, valor fixo: BR
+    // payload.append("58").append("02").append("BR");
+
+    // // Merchant Name (ID: 59): obrigatório
+    // payload.append("59").append(nomeRecebedorSizeStr).append(nomeRecebedor);
+
+    // // Merchant City (ID: 60): obrigatório
+    // payload.append("60").append(cidadeSizeStr).append(cidade);
+
+    // // Additional Data Field (ID: 62): opcional, usado para o TxID
+    // Integer txIdSize = txId.length();
+    // Integer additionalDataFieldSize = txIdSize + 4; // 4 para o subcampo
+
+    // payload.append("62")
+    // .append(String.format("%02d", additionalDataFieldSize))
+    // .append("05").append(String.format("%02d", txIdSize))
+    // .append(txId);
+
+    // // CRC16 (ID: 63): obrigatório, 4 caracteres
+    // payload.append("6304");
+
+    // // Calcular o CRC-16
+    // String payloadWithoutCrc = payload.toString();
+    // int crc = calcularCRC16(payloadWithoutCrc);
+
+    // // Adicionar o CRC-16 calculado
+    // String payloadFinal = payloadWithoutCrc + String.format("%04X", crc);
+
+    // return payloadFinal;
+    // }
+
+    /**
+     * Calcula o CRC-16 (CCITT) para o texto do QR Code
+     * 
+     * @param data String para calcular o CRC
+     * @return valor do CRC-16
+     */
+    // private int calcularCRC16(String data) {
+    // int crc = 0xFFFF; // Valor inicial do CRC16
+
+    // for (int i = 0; i < data.length(); i++) {
+    // char c = data.charAt(i);
+    // crc ^= (c << 8);
+
+    // for (int j = 0; j < 8; j++) {
+    // if ((crc & 0x8000) != 0) {
+    // crc = (crc << 1) ^ 0x1021;
+    // } else {
+    // crc = crc << 1;
+    // }
+    // }
+    // }
+
+    // return crc & 0xFFFF; // Garante que o resultado seja um valor de 16 bits
+    // }
 
     /**
      * Consulta detalhes completos de uma cobrança Pix na API do banco
@@ -1210,4 +1362,5 @@ public class PixService {
 
         return json;
     }
+
 }

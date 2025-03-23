@@ -4,12 +4,16 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
 
+import org.acme.dto.ErrorResponseDTO;
 import org.acme.dto.PixCobrancaDTO;
+import org.acme.dto.PixPagamentoDTO;
+import org.acme.dto.PixPagamentoResponseDTO;
 import org.acme.model.PixComVencimento;
 import org.acme.model.PixImediato;
 import org.acme.service.PixService;
 import org.eclipse.microprofile.openapi.annotations.Operation;
 import org.eclipse.microprofile.openapi.annotations.media.Content;
+import org.eclipse.microprofile.openapi.annotations.media.Schema;
 import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
 import org.jboss.logging.Logger;
 
@@ -250,7 +254,7 @@ public class PixResource {
      * Gera QR Code para uma cobrança existente
      * 
      * @param txid ID da transação
-     * @return Imagem do QR Code em base64
+     * @return Imagem do QR Code em formato PNG
      */
     @GET
     @Path("/cobranca/{txid}/qrcode")
@@ -278,7 +282,10 @@ public class PixResource {
                 PixComVencimento pixVencimento = pixService.consultarCobrancaVencimentoRepository(txid);
                 if (pixVencimento == null) {
                     LOG.warn("Cobrança não encontrada para gerar QR Code: " + txid);
-                    return Response.status(Response.Status.NOT_FOUND).build();
+                    return Response.status(Response.Status.NOT_FOUND)
+                            .entity(new JsonObject().put("erro", "Cobrança não encontrada").encode())
+                            .type(MediaType.APPLICATION_JSON)
+                            .build();
                 }
 
                 pixCopiaECola = pixVencimento.getPixCopiaECola();
@@ -288,7 +295,8 @@ public class PixResource {
             if (pixCopiaECola == null || pixCopiaECola.isEmpty()) {
                 LOG.warn("Dados para QR Code não disponíveis: " + txid);
                 return Response.status(Response.Status.BAD_REQUEST)
-                        .entity(new JsonObject().put("erro", "Dados para QR Code não disponíveis").encode())
+                        .entity(new JsonObject().put("erro", "Texto Pix Copia e Cola não disponível para esta cobrança")
+                                .encode())
                         .type(MediaType.APPLICATION_JSON)
                         .build();
             }
@@ -296,7 +304,9 @@ public class PixResource {
             // Gerar imagem do QR Code
             byte[] qrCodeImage = pixService.gerarQrCodeImage(pixCopiaECola);
 
-            return Response.ok(qrCodeImage).build();
+            return Response.ok(qrCodeImage)
+                    .header("Content-Disposition", "inline; filename=\"qrcode-pix-" + txid + ".png\"")
+                    .build();
 
         } catch (Exception e) {
             LOG.error("Erro ao gerar QR Code", e);
@@ -310,24 +320,28 @@ public class PixResource {
     /**
      * Registra o pagamento de uma cobrança Pix (simulação)
      * 
-     * @param txid           ID da transação
-     * @param dadosPagamento Dados do pagamento
+     * @param txid         ID da transação
+     * @param pagamentoDTO Dados do pagamento
      * @return Resultado da operação
      */
     @POST
     @Path("/cobranca/{txid}/pagar")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.APPLICATION_JSON)
     @Operation(summary = "Registra o pagamento de uma cobrança Pix (simulação)", description = "Este endpoint simula o recebimento de um pagamento Pix para uma cobrança existente. "
             +
             "É utilizado apenas para fins de teste e simulação, já que em um ambiente real o pagamento seria " +
             "confirmado automaticamente pelo PSP (Provedor de Serviços de Pagamento). " +
             "Altera o status da cobrança para CONCLUIDA e registra os detalhes do pagamento.")
-    @APIResponse(responseCode = "200", description = "Pagamento registrado com sucesso", content = @Content(mediaType = "application/json"))
+    @APIResponse(responseCode = "200", description = "Pagamento registrado com sucesso", content = @Content(mediaType = "application/json", schema = @Schema(implementation = PixPagamentoResponseDTO.class)))
     @APIResponse(responseCode = "404", description = "Cobrança não encontrada", content = @Content(mediaType = "application/json"))
     @APIResponse(responseCode = "409", description = "Cobrança já foi paga", content = @Content(mediaType = "application/json"))
     @APIResponse(responseCode = "500", description = "Erro interno ao processar a requisição", content = @Content(mediaType = "application/json"))
-    public Response registrarPagamento(@PathParam("txid") String txid, JsonObject dadosPagamento) {
+    public Response registrarPagamento(@PathParam("txid") String txid,
+            PixPagamentoDTO pagamentoDTO) {
         try {
             LOG.info("Registrando pagamento para cobrança: " + txid);
+            LOG.info("Dados do pagamento: " + pagamentoDTO);
 
             // Primeiro verifica se é cobrança imediata
             PixImediato pixImediato = pixService.consultarCobrancaRepository(txid);
@@ -338,28 +352,40 @@ public class PixResource {
                 if (pixImediato.isPaga()) {
                     LOG.warn("Cobrança já foi paga: " + txid);
                     return Response.status(Response.Status.CONFLICT)
-                            .entity(new JsonObject().put("erro", "Cobrança já foi paga").encode())
+                            .entity(new ErrorResponseDTO("Cobrança já foi paga"))
                             .build();
                 }
 
-                // Extrair dados do pagamento
-                String endToEndId = dadosPagamento.getString("endToEndId", "E" + System.currentTimeMillis());
-                BigDecimal valorPago = new BigDecimal(
-                        dadosPagamento.getString("valorPago", pixImediato.getValorOriginal().toString()));
-                String infoPagador = dadosPagamento.getString("infoPagador", "");
+                // Preparar dados do pagamento
+                String endToEndId = pagamentoDTO.endToEndId();
+                if (endToEndId == null || endToEndId.isEmpty()) {
+                    // Gerar um ID se não for fornecido
+                    endToEndId = "E" + System.currentTimeMillis();
+                }
+
+                BigDecimal valorPago = pagamentoDTO.valorPago();
+                if (valorPago == null) {
+                    valorPago = pixImediato.getValorOriginal();
+                }
+
+                String infoPagador = pagamentoDTO.infoPagador();
+                if (infoPagador == null) {
+                    infoPagador = "";
+                }
 
                 // Registrar o pagamento
                 pixImediato.registrarPagamento(endToEndId, valorPago, infoPagador);
                 pixService.persistirPixImediato(pixImediato);
 
-                JsonObject resposta = new JsonObject()
-                        .put("txid", txid)
-                        .put("status", "CONCLUIDA")
-                        .put("valorPago", valorPago.toString())
-                        .put("endToEndId", endToEndId)
-                        .put("horarioPagamento", pixImediato.getHorarioPagamento().toString());
+                // Criar resposta
+                PixPagamentoResponseDTO resposta = new PixPagamentoResponseDTO(
+                        txid,
+                        "CONCLUIDA",
+                        valorPago,
+                        endToEndId,
+                        pixImediato.getHorarioPagamento());
 
-                return Response.ok(resposta.encode()).build();
+                return Response.ok(resposta).build();
             } else {
                 // Tenta localizar como cobrança com vencimento
                 PixComVencimento pixVencimento = pixService.consultarCobrancaVencimentoRepository(txid);
@@ -367,7 +393,7 @@ public class PixResource {
                 if (pixVencimento == null) {
                     LOG.warn("Cobrança não encontrada para pagamento: " + txid);
                     return Response.status(Response.Status.NOT_FOUND)
-                            .entity(new JsonObject().put("erro", "Cobrança não encontrada").encode())
+                            .entity(new ErrorResponseDTO("Cobrança não encontrada"))
                             .build();
                 }
 
@@ -376,33 +402,45 @@ public class PixResource {
                 if (pixVencimento.isPaga()) {
                     LOG.warn("Cobrança com vencimento já foi paga: " + txid);
                     return Response.status(Response.Status.CONFLICT)
-                            .entity(new JsonObject().put("erro", "Cobrança já foi paga").encode())
+                            .entity(new ErrorResponseDTO("Cobrança já foi paga"))
                             .build();
                 }
 
-                // Extrair dados do pagamento
-                String endToEndId = dadosPagamento.getString("endToEndId", "E" + System.currentTimeMillis());
-                BigDecimal valorPago = new BigDecimal(
-                        dadosPagamento.getString("valorPago", pixVencimento.getValorOriginal().toString()));
-                String infoPagador = dadosPagamento.getString("infoPagador", "");
+                // Preparar dados do pagamento
+                String endToEndId = pagamentoDTO.endToEndId();
+                if (endToEndId == null || endToEndId.isEmpty()) {
+                    // Gerar um ID se não for fornecido
+                    endToEndId = "E" + System.currentTimeMillis();
+                }
+
+                BigDecimal valorPago = pagamentoDTO.valorPago();
+                if (valorPago == null) {
+                    valorPago = pixVencimento.getValorOriginal();
+                }
+
+                String infoPagador = pagamentoDTO.infoPagador();
+                if (infoPagador == null) {
+                    infoPagador = "";
+                }
 
                 // Registrar o pagamento
                 pixVencimento.registrarPagamento(endToEndId, valorPago, infoPagador);
                 pixService.persistirPixComVencimento(pixVencimento);
 
-                JsonObject resposta = new JsonObject()
-                        .put("txid", txid)
-                        .put("status", "CONCLUIDA")
-                        .put("valorPago", valorPago.toString())
-                        .put("endToEndId", endToEndId)
-                        .put("horarioPagamento", pixVencimento.getHorarioPagamento().toString());
+                // Criar resposta
+                PixPagamentoResponseDTO resposta = new PixPagamentoResponseDTO(
+                        txid,
+                        "CONCLUIDA",
+                        valorPago,
+                        endToEndId,
+                        pixVencimento.getHorarioPagamento());
 
-                return Response.ok(resposta.encode()).build();
+                return Response.ok(resposta).build();
             }
         } catch (Exception e) {
             LOG.error("Erro ao registrar pagamento", e);
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
-                    .entity(new JsonObject().put("erro", e.getMessage()).encode())
+                    .entity(new ErrorResponseDTO("Erro ao registrar pagamento: " + e.getMessage()))
                     .build();
         }
     }
