@@ -23,7 +23,7 @@ public class PixImediato extends Pix {
         this.setTipoCob("cob");
         this.expiracao = 86400; // 24 horas por padrão
     }
-    
+
     /**
      * Construtor com os campos obrigatórios
      *
@@ -35,10 +35,29 @@ public class PixImediato extends Pix {
      * @param cnpj CNPJ do devedor (opcional, pode ser null)
      */
     public PixImediato(String txid, String chave, BigDecimal valorOriginal, 
-                      String nome, String cpf, String cnpj) {
+                      String nome, String cpf, String cnpj, Integer expiracao) {
+        super(txid, chave, valorOriginal, nome, cpf, cnpj);
+        this.setTipoCob("cob");
+        this.expiracao = expiracao; 
+    }
+    
+    /**
+     * Construtor com os campos obrigatórios
+     *
+     * @param txid ID da transação
+     * @param chave Chave Pix do recebedor
+     * @param valorOriginal Valor original da cobrança
+     * @param nome Nome do devedor
+     * @param cpf CPF do devedor (opcional, pode ser null)
+     * @param cnpj CNPJ do devedor (opcional, pode ser null)
+     * @param banco Código do banco
+     */
+    public PixImediato(String txid, String chave, BigDecimal valorOriginal, 
+                      String nome, String cpf, String cnpj, String banco) {
         super(txid, chave, valorOriginal, nome, cpf, cnpj);
         this.setTipoCob("cob");
         this.expiracao = 86400; // 24 horas por padrão
+        this.setBanco(banco);
     }
     
     /**
@@ -53,8 +72,8 @@ public class PixImediato extends Pix {
      * @param expiracao Tempo de vida da cobrança em segundos
      */
     public PixImediato(String txid, String chave, BigDecimal valorOriginal, 
-                      String nome, String cpf, String cnpj, Integer expiracao) {
-        this(txid, chave, valorOriginal, nome, cpf, cnpj);
+                      String nome, String cpf, String cnpj, Integer expiracao, String banco) {
+        this(txid, chave, valorOriginal, nome, cpf, cnpj, banco);
         this.expiracao = expiracao;
     }
     

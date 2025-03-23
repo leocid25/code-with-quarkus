@@ -54,6 +54,7 @@ public abstract class Pix extends DefaultEntity {
     private Long idLoc; // ID do location
     private String location; // URL do payload
     private String tipoCob; // Tipo da cobrança (cob ou cobv)
+    private String banco; // Código do banco
 
     // Status da cobrança
     private String status; // ATIVA, CONCLUIDA, REMOVIDA_PELO_USUARIO_RECEBEDOR, REMOVIDA_PELO_PSP
@@ -887,5 +888,13 @@ public abstract class Pix extends DefaultEntity {
                 ", tipo=" + (isCobvTipo() ? "cobv" : "cob") +
                 ", status='" + status + '\'' +
                 '}';
+    }
+
+    public String getBanco() {
+        return banco;
+    }
+
+    public void setBanco(String banco) {
+        this.banco = banco;
     }
 }

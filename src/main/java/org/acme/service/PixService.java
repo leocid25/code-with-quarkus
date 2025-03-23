@@ -6,11 +6,17 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+import java.util.Collections;
 import java.util.List;
+import java.util.UUID;
 
 import org.acme.config.PixConfig;
+import org.acme.model.PixComVencimento;
 import org.acme.model.PixImediato;
 import org.acme.model.PixInfoAdicional;
+import org.acme.repository.PixComVencimentoRepository;
 import org.acme.repository.PixImediatoRepository;
 import org.jboss.logging.Logger;
 
@@ -27,6 +33,9 @@ import jakarta.transaction.Transactional;
 public class PixService {
 
     private static final Logger LOG = Logger.getLogger(PixService.class);
+
+    @Inject
+    PixComVencimentoRepository pixComVencimentoRepository;
 
     @Inject
     PixImediatoRepository pixImediatoRepository;
@@ -63,11 +72,12 @@ public class PixService {
         LOG.info("JSON da cobrança: " + cobrancaJson.encode());
 
         LOG.info("TxId: " + pixImediato.getTxid());
-        LOG.info("URL base: " + pixConfig.getPixUrl());
+        LOG.info("URL base: " + pixConfig.getPixBBImediatoUrl());
         LOG.info("App Key: " + pixConfig.getAppKey());
 
         // Adicionar o parâmetro gw-dev-app-key como query parameter
-        String urlCompleta = pixConfig.getPixUrl() + pixImediato.getTxid() + "?gw-dev-app-key=" + pixConfig.getAppKey();
+        String urlCompleta = pixConfig.getPixBBImediatoUrl() + pixImediato.getTxid() + "?gw-dev-app-key="
+                + pixConfig.getAppKey();
         System.out.println("URL completa: " + urlCompleta);
 
         // Construir a requisição HTTP
@@ -160,6 +170,188 @@ public class PixService {
     }
 
     /**
+     * Cria uma cobrança Pix com vencimento usando a API do Banco do Brasil
+     * 
+     * @param pixVencimento Objeto com os dados da cobrança
+     * @return Resultado da operação com os detalhes da cobrança criada
+     * @throws Exception Se ocorrer algum erro na criação da cobrança
+     */
+    @Transactional
+    public JsonObject criarCobrancaPixVencimento(PixComVencimento pixVencimento) throws Exception {
+        LOG.info("Iniciando criação de cobrança Pix com vencimento, TxID: " + pixVencimento.getTxid());
+
+        // Obter token de acesso
+        String accessToken = tokenService.getAccessToken();
+        LOG.info("Access Token obtido com sucesso!");
+
+        // Criar o cliente HTTP
+        HttpClient client = HttpClient.newBuilder()
+                .version(HttpClient.Version.HTTP_1_1)
+                .connectTimeout(Duration.ofSeconds(20))
+                .build();
+
+        // Criar o JSON de cobrança PIX com vencimento
+        JsonObject cobrancaJson = criarJsonCobrancaVencimento(pixVencimento);
+        LOG.info("JSON da cobrança com vencimento: " + cobrancaJson.encode());
+
+        // Adicionar o parâmetro gw-dev-app-key como query parameter
+        String urlCompleta = pixConfig.getPixBBVencimentoUrl() + pixVencimento.getTxid() + "?gw-dev-app-key="
+                + pixConfig.getAppKey();
+        LOG.info("URL completa: " + urlCompleta);
+
+        // Construir a requisição HTTP
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(urlCompleta))
+                .header("Content-Type", "application/json")
+                .header("Authorization", "Bearer " + accessToken)
+                .header("Accept", "application/json")
+                .PUT(HttpRequest.BodyPublishers.ofString(cobrancaJson.encode()))
+                .build();
+
+        // Enviar a requisição e obter a resposta
+        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+        LOG.info("Resposta da API: " + response.statusCode() + " - " + response.body());
+
+        if (response.statusCode() >= 200 && response.statusCode() < 300) {
+            // Processar resposta de sucesso e atualizar o objeto PixComVencimento
+            JsonObject jsonResponse = new JsonObject(response.body());
+
+            // Atualizar dados do pix com base na resposta
+            atualizarDadosPixVencimento(pixVencimento, jsonResponse);
+
+            // Persistir o objeto no banco de dados
+            persistirPixComVencimento(pixVencimento);
+
+            LOG.info("Cobrança Pix com vencimento criada com sucesso: " + pixVencimento.getTxid());
+            return jsonResponse;
+        } else {
+            LOG.error(
+                    "Falha na criação da cobrança Pix com vencimento. Código: " + response.statusCode() + ", Resposta: "
+                            + response.body());
+            throw new RuntimeException("Falha na criação da cobrança Pix com vencimento. Código: " +
+                    response.statusCode() + ", Resposta: " + response.body());
+        }
+    }
+
+    /**
+     * Cria o objeto JSON para envio na requisição de criação de cobrança com
+     * vencimento
+     * 
+     * @param pixVencimento Objeto com os dados da cobrança
+     * @return Objeto JSON formatado de acordo com a API
+     */
+    private JsonObject criarJsonCobrancaVencimento(PixComVencimento pixVencimento) {
+        JsonObject cobranca = new JsonObject();
+
+        // Adicionar objeto calendario
+        JsonObject calendario = new JsonObject()
+                .put("dataDeVencimento", pixVencimento.getDataVencimento().format(DateTimeFormatter.ISO_DATE));
+
+        // Adicionar validade após vencimento, se existir
+        if (pixVencimento.getValidadeAposVencimento() != null) {
+            calendario.put("validadeAposVencimento", pixVencimento.getValidadeAposVencimento());
+        }
+
+        cobranca.put("calendario", calendario);
+
+        // Adicionar objeto devedor
+        JsonObject devedor = new JsonObject();
+
+        if (pixVencimento.getCnpj() != null && !pixVencimento.getCnpj().isEmpty()) {
+            devedor.put("cnpj", pixVencimento.getCnpj());
+        } else if (pixVencimento.getCpf() != null && !pixVencimento.getCpf().isEmpty()) {
+            devedor.put("cpf", pixVencimento.getCpf());
+        }
+
+        devedor.put("nome", pixVencimento.getNome());
+
+        // Adicionar informações opcionais de endereço do devedor, se disponíveis
+        if (pixVencimento.getLogradouro() != null && !pixVencimento.getLogradouro().isEmpty()) {
+            devedor.put("logradouro", pixVencimento.getLogradouro());
+        }
+
+        if (pixVencimento.getCidade() != null && !pixVencimento.getCidade().isEmpty()) {
+            devedor.put("cidade", pixVencimento.getCidade());
+        }
+
+        if (pixVencimento.getUf() != null && !pixVencimento.getUf().isEmpty()) {
+            devedor.put("uf", pixVencimento.getUf());
+        }
+
+        if (pixVencimento.getCep() != null && !pixVencimento.getCep().isEmpty()) {
+            devedor.put("cep", pixVencimento.getCep());
+        }
+
+        if (pixVencimento.getEmail() != null && !pixVencimento.getEmail().isEmpty()) {
+            devedor.put("email", pixVencimento.getEmail());
+        }
+
+        cobranca.put("devedor", devedor);
+
+        // Adicionar objeto valor
+        JsonObject valor = new JsonObject()
+                .put("original", pixVencimento.getValorOriginal().toString());
+
+        // Adicionar informações de multa, se configuradas
+        if (pixVencimento.getMultaModalidade() != null && pixVencimento.getMultaValor() != null) {
+            JsonObject multa = new JsonObject()
+                    .put("modalidade", pixVencimento.getMultaModalidade())
+                    .put("valorPerc", pixVencimento.getMultaValor().toString());
+            valor.put("multa", multa);
+        }
+
+        // Adicionar informações de juros, se configurados
+        if (pixVencimento.getJurosModalidade() != null && pixVencimento.getJurosValor() != null) {
+            JsonObject juros = new JsonObject()
+                    .put("modalidade", pixVencimento.getJurosModalidade())
+                    .put("valorPerc", pixVencimento.getJurosValor().toString());
+            valor.put("juros", juros);
+        }
+
+        // Adicionar informações de abatimento, se configurado
+        if (pixVencimento.getAbatimentoModalidade() != null && pixVencimento.getAbatimentoValor() != null) {
+            JsonObject abatimento = new JsonObject()
+                    .put("modalidade", pixVencimento.getAbatimentoModalidade())
+                    .put("valorPerc", pixVencimento.getAbatimentoValor().toString());
+            valor.put("abatimento", abatimento);
+        }
+
+        // Adicionar informações de desconto, se configurado
+        if (pixVencimento.getDescontoModalidade() != null && pixVencimento.getDescontoValor() != null) {
+            JsonObject desconto = new JsonObject()
+                    .put("modalidade", pixVencimento.getDescontoModalidade())
+                    .put("valorPerc", pixVencimento.getDescontoValor().toString());
+            valor.put("desconto", desconto);
+        }
+
+        cobranca.put("valor", valor);
+
+        // Adicionar chave PIX (pode ser CPF, CNPJ, telefone, email ou EVP)
+        cobranca.put("chave", pixVencimento.getChave());
+
+        // Adicionar solicitação ao pagador
+        if (pixVencimento.getSolicitacaoPagador() != null) {
+            cobranca.put("solicitacaoPagador", pixVencimento.getSolicitacaoPagador());
+        }
+
+        // Adicionar informações adicionais
+        if (pixVencimento.getInfoAdicionais() != null && !pixVencimento.getInfoAdicionais().isEmpty()) {
+            JsonArray infoAdicionais = new JsonArray();
+
+            for (PixInfoAdicional info : pixVencimento.getInfoAdicionais()) {
+                JsonObject infoObj = new JsonObject()
+                        .put("nome", info.getNome())
+                        .put("valor", info.getValor());
+                infoAdicionais.add(infoObj);
+            }
+
+            cobranca.put("infoAdicionais", infoAdicionais);
+        }
+
+        return cobranca;
+    }
+
+    /**
      * Atualiza os dados do PixImediato com as informações retornadas pela API
      * 
      * @param pixImediato Objeto a ser atualizado
@@ -188,12 +380,54 @@ public class PixService {
     }
 
     /**
+     * Atualiza os dados do PixComVencimento com as informações retornadas pela API
+     * 
+     * @param pixVencimento Objeto a ser atualizado
+     * @param response      Resposta da API
+     */
+    private void atualizarDadosPixVencimento(PixComVencimento pixVencimento, JsonObject response) {
+        // Atualizar dados de location
+        if (response.containsKey("location")) {
+            pixVencimento.setLocation(response.getString("location"));
+        }
+
+        // Atualizar copia e cola
+        if (response.containsKey("pixCopiaECola")) {
+            pixVencimento.setPixCopiaECola(response.getString("pixCopiaECola"));
+        }
+
+        // Atualizar revisão
+        if (response.containsKey("revisao")) {
+            pixVencimento.setRevisao(response.getInteger("revisao"));
+        }
+
+        // Atualizar status caso seja diferente de "ATIVA"
+        if (response.containsKey("status") && !response.getString("status").equals("ATIVA")) {
+            pixVencimento.setStatus(response.getString("status"));
+        }
+
+        // Atualizar informações de recebedor se disponíveis
+        if (response.containsKey("recebedor")) {
+            JsonObject recebedor = response.getJsonObject("recebedor");
+            if (recebedor.containsKey("nome")) {
+                pixVencimento.setRecebedorNome(recebedor.getString("nome"));
+            }
+            if (recebedor.containsKey("cpf")) {
+                pixVencimento.setRecebedorCpf(recebedor.getString("cpf"));
+            }
+            if (recebedor.containsKey("cnpj")) {
+                pixVencimento.setRecebedorCnpj(recebedor.getString("cnpj"));
+            }
+        }
+    }
+
+    /**
      * Persiste o objeto PixImediato no banco de dados
      * 
      * @param pixImediato Objeto a ser persistido
      */
     @Transactional
-    protected void persistirPixImediato(PixImediato pixImediato) {
+    public void persistirPixImediato(PixImediato pixImediato) {
         // Buscar por txid como um campo normal, não como ID
         PixImediato pixExistente = pixImediatoRepository.findByTxId(pixImediato.getTxid());
 
@@ -205,60 +439,73 @@ public class PixService {
             // Atualização
             LOG.debug("Atualizando cobrança Pix existente: " + pixImediato.getTxid());
             // Garantir que o ID do objeto a ser mesclado seja o mesmo do existente
-            pixImediato.setId(pixExistente.getId()); 
-            pixImediatoRepository.persist(pixImediato);
+            pixImediato.setId(pixExistente.getId());
+            pixImediatoRepository.getEntityManager().merge(pixImediato);
         }
     }
 
     /**
-     * Gera um TxID único para uma cobrança Pix baseado no último ID do banco de dados
+     * Persiste o objeto PixComVencimento no banco de dados
      * 
-     * @return TxID válido com exatamente 34 caracteres
+     * @param pixVencimento Objeto a ser persistido
      */
-    public String gerarTxid() {
-    // Gerar txid único (entre 26-35 caracteres) sem caracteres especiais
-//             // Usando apenas letras e números conforme exigido pelo Banco do Brasil
-            String txid = "Teste" + System.currentTimeMillis() + "X";
-//             // Garantir que tenha entre 26 e 35 caracteres
-             if (txid.length() < 26) {
-                 // Preencher com zeros à direita se for muito curto
-                 txid = txid + "0".repeat(26 - txid.length());
-             } else if (txid.length() > 35) {
-                 // Cortar se for muito longo
-                 txid = txid.substring(0, 35);
-             }
-             return txid;
-    //     // Obter o último ID do banco de dados usando o método do repositório
-    //     Long ultimoId = pixImediatoRepository.obterUltimoId();
-        
-    //     // Incrementar o ID
-    //     Long novoId = ultimoId + 1;
-        
-    //     // Prefixo "PIX"
-    //     String prefixo = "PIX";
-        
-    //     // Converter novoId para string
-    //     String idStr = novoId.toString();
-        
-    //     // Calcular quantos zeros são necessários (o tamanho final deve ser 34)
-    //     int tamanhoAtual = prefixo.length() + idStr.length();
-    //     int zerosNecessarios = 34 - tamanhoAtual;
-        
-    //     // Garantir que temos espaço suficiente para zeros (pelo menos 0)
-    //     if (zerosNecessarios < 0) {
-    //         LOG.warn("ID muito grande para gerar txid com 34 caracteres. Truncando ID.");
-    //         // Se o ID for muito grande, vamos truncar
-    //         idStr = idStr.substring(0, idStr.length() + zerosNecessarios);
-    //         zerosNecessarios = 0;
-    //     }
-        
-    //     // Construir o txid final: PIX + zeros + id
-    //     String txid = prefixo + "0".repeat(zerosNecessarios) + idStr;
-        
-    //     LOG.debug("TxID gerado: " + txid + " (baseado no ID: " + novoId + ")");
-    //     return txid;
-     }
+    @Transactional
+    public void persistirPixComVencimento(PixComVencimento pixVencimento) {
+        // Buscar por txid como um campo normal, não como ID
+        PixComVencimento pixExistente = pixComVencimentoRepository.findByTxId(pixVencimento.getTxid());
 
+        if (pixExistente == null) {
+            // Novo registro
+            LOG.debug("Persistindo nova cobrança Pix com vencimento: " + pixVencimento.getTxid());
+            pixComVencimentoRepository.persist(pixVencimento);
+        } else {
+            // Atualização
+            LOG.debug("Atualizando cobrança Pix com vencimento existente: " + pixVencimento.getTxid());
+            // Garantir que o ID do objeto a ser mesclado seja o mesmo do existente
+            pixVencimento.setId(pixExistente.getId());
+            pixComVencimentoRepository.getEntityManager().merge(pixVencimento);
+        }
+    }
+
+    /**
+     * Gera um TxID de exatamente 35 caracteres, apenas letras e números.
+     *
+     * @return TxID válido com 35 caracteres
+     */
+    public String gerarTxid(String tipoCob, String codigoBanco) {
+        // Gera um UUID sem hífens (32 caracteres hexadecimais)
+        String uuid = UUID.randomUUID().toString().replaceAll("-", "").toUpperCase().substring(0, 20); // 32 chars
+        String prefixo;
+        switch (tipoCob) {
+            case "cob" -> {
+                // Prefixo fixo, pode ser seu identificador de sistema, por exemplo
+                prefixo = "COB" + codigoBanco + "I"; // Especifica o tipo de cobrança seguido pelo Banco
+            }
+            case "cobv" -> {
+                // Prefixo fixo, pode ser seu identificador de sistema, por exemplo
+                prefixo = "COBV" + codigoBanco + "I"; // Especifica o tipo de cobrança seguido pelo Banco
+            }
+            default -> {
+                // Prefixo fixo, pode ser seu identificador de sistema, por exemplo
+                prefixo = "PIX"; // 3 caracteres
+            }
+        }
+
+        // Timestamp simples em base 36 (mais compacto e ainda único)
+        String timestamp = Long.toString(System.currentTimeMillis(), 36).toUpperCase(); // varia, ~8–9 chars
+
+        // Junta tudo e remove o que passar dos 35 caracteres
+        String raw = prefixo + uuid + timestamp; // pode ter mais de 35
+
+        // Corta ou preenche para garantir exatamente 35 caracteres
+        if (raw.length() < 35) {
+            raw = raw + "0".repeat(35 - raw.length());
+        } else if (raw.length() > 35) {
+            raw = raw.substring(0, 35);
+        }
+
+        return raw;
+    }
 
     /**
      * Consulta uma cobrança Pix pelo TxID no meu banco de dados (via Repository)
@@ -266,12 +513,28 @@ public class PixService {
      * @param txid ID da transação
      * @return Objeto PixImediato se encontrado, null caso contrário
      */
-    public PixImediato consultarCobranca(String txid) {
+    public PixImediato consultarCobrancaRepository(String txid) {
         try {
             LOG.debug("Consultando cobrança Pix com TxID: " + txid);
             return pixImediatoRepository.findByTxId(txid);
         } catch (Exception e) {
             LOG.error("Erro ao consultar cobrança Pix", e);
+            return null;
+        }
+    }
+
+    /**
+     * Consulta uma cobrança Pix com vencimento pelo TxID no banco de dados
+     * 
+     * @param txid ID da transação
+     * @return Objeto PixComVencimento se encontrado, null caso contrário
+     */
+    public PixComVencimento consultarCobrancaVencimentoRepository(String txid) {
+        try {
+            LOG.debug("Consultando cobrança Pix com vencimento, TxID: " + txid);
+            return pixComVencimentoRepository.findByTxId(txid);
+        } catch (Exception e) {
+            LOG.error("Erro ao consultar cobrança Pix com vencimento", e);
             return null;
         }
     }
@@ -290,65 +553,49 @@ public class PixService {
     }
 
     /**
-     * Consulta o status de uma cobrança Pix diretamente na API do banco
+     * Lista as cobranças Pix com vencimento mais recentes
      * 
-     * @param txid ID da transação
-     * @return Objeto JSON com os dados atualizados da cobrança
-     * @throws Exception Se ocorrer algum erro na consulta
+     * @param limite Número máximo de registros a retornar
+     * @return Lista de cobranças
      */
-    public JsonObject consultarCobrancaNoServidor(String txid) throws Exception {
-        LOG.info("Consultando status da cobrança Pix na API: " + txid);
+    public List<PixComVencimento> listarCobrancasVencimentoRecentes(int limite) {
+        LOG.debug("Listando " + limite + " cobranças Pix com vencimento mais recentes");
+        return pixComVencimentoRepository.listarRecentes(limite);
+    }
 
-        // Obter token de acesso
-        String accessToken = tokenService.getAccessToken();
+    /**
+     * Lista as cobranças Pix com vencimento por período de vencimento
+     * 
+     * @param dataInicio Data inicial de vencimento
+     * @param dataFim    Data final de vencimento
+     * @return Lista de cobranças
+     */
+    public List<PixComVencimento> listarCobrancasVencimentoPorPeriodo(LocalDate dataInicio, LocalDate dataFim) {
 
-        // Criar o cliente HTTP
-        HttpClient client = HttpClient.newBuilder()
-                .version(HttpClient.Version.HTTP_1_1)
-                .connectTimeout(Duration.ofSeconds(20))
-                .build();
+        try {
+            // Chamar o método do repositório
+            List<PixComVencimento> cobrancas = pixComVencimentoRepository.listarProximasDoVencimento(dataInicio,
+                    dataFim);
 
-        // Adicionar o parâmetro gw-dev-app-key como query parameter
-        String urlCompleta = pixConfig.getPixUrl() + txid + "?gw-dev-app-key=" + pixConfig.getAppKey();
+            return cobrancas;
+        } catch (Exception e) {
+            LOG.error("Erro ao listar cobranças por período: " + e.getMessage(), e);
 
-        // Construir a requisição HTTP
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(urlCompleta))
-                .header("Authorization", "Bearer " + accessToken)
-                .header("Accept", "application/json")
-                .GET()
-                .build();
-
-        // Enviar a requisição e obter a resposta
-        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
-
-        if (response.statusCode() >= 200 && response.statusCode() < 300) {
-            JsonObject jsonResponse = new JsonObject(response.body());
-
-            // Atualizar objeto no banco de dados se ele existir
-            PixImediato pixImediato = consultarCobranca(txid);
-            if (pixImediato != null) {
-                atualizarDadosPix(pixImediato, jsonResponse);
-                persistirPixImediato(pixImediato);
-            }
-
-            return jsonResponse;
-        } else {
-            LOG.error("Falha na consulta da cobrança Pix. Código: " + response.statusCode() + ", Resposta: "
-                    + response.body());
-            throw new RuntimeException("Falha na consulta da cobrança Pix. Código: " +
-                    response.statusCode() + ", Resposta: " + response.body());
+            // Em caso de erro, retorna uma lista vazia em vez de propagar a exceção
+            return Collections.emptyList();
         }
     }
 
     /**
-     * Persiste uma cobrança Pix no banco de dados
+     * Lista as cobranças Pix vencidas e não pagas
      * 
-     * @param pixImediato Cobrança a ser persistida
+     * @param dataReferencia Data de referência para verificar o vencimento
+     *                       (geralmente a data atual)
+     * @return Lista de cobranças vencidas e não pagas
      */
-    @Transactional
-    public void persistirCobranca(PixImediato pixImediato) {
-        persistirPixImediato(pixImediato);
+    public List<PixComVencimento> listarCobrancasVencimentoVencidas(LocalDate dataReferencia) {
+        LOG.debug("Listando cobranças Pix vencidas até " + dataReferencia);
+        return pixComVencimentoRepository.listarVencidasNaoPagas(dataReferencia);
     }
 
     /**
@@ -401,7 +648,7 @@ public class PixService {
                 .build();
 
         // Adicionar o parâmetro gw-dev-app-key como query parameter
-        String urlCompleta = pixConfig.getPixUrl() + txid + "?gw-dev-app-key=" + pixConfig.getAppKey();
+        String urlCompleta = pixConfig.getPixBBImediatoUrl() + txid + "?gw-dev-app-key=" + pixConfig.getAppKey();
 
         // Construir a requisição HTTP
         HttpRequest request = HttpRequest.newBuilder()
@@ -424,6 +671,58 @@ public class PixService {
         }
 
         return resultado;
+    }
+
+    /**
+     * Consulta o status de uma cobrança Pix diretamente na API do banco
+     * 
+     * @param txid ID da transação
+     * @return Objeto JSON com os dados atualizados da cobrança
+     * @throws Exception Se ocorrer algum erro na consulta
+     */
+    public JsonObject consultarCobrancaNoServidor(String txid) throws Exception {
+        LOG.info("Consultando status da cobrança Pix na API: " + txid);
+
+        // Obter token de acesso
+        String accessToken = tokenService.getAccessToken();
+
+        // Criar o cliente HTTP
+        HttpClient client = HttpClient.newBuilder()
+                .version(HttpClient.Version.HTTP_1_1)
+                .connectTimeout(Duration.ofSeconds(20))
+                .build();
+
+        // Adicionar o parâmetro gw-dev-app-key como query parameter
+        String urlCompleta = pixConfig.getPixBBImediatoUrl() + txid + "?gw-dev-app-key=" + pixConfig.getAppKey();
+
+        // Construir a requisição HTTP
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(urlCompleta))
+                .header("Authorization", "Bearer " + accessToken)
+                .header("Accept", "application/json")
+                .GET()
+                .build();
+
+        // Enviar a requisição e obter a resposta
+        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+
+        if (response.statusCode() >= 200 && response.statusCode() < 300) {
+            JsonObject jsonResponse = new JsonObject(response.body());
+
+            // Atualizar objeto no banco de dados se ele existir
+            PixImediato pixImediato = consultarCobrancaRepository(txid);
+            if (pixImediato != null) {
+                atualizarDadosPix(pixImediato, jsonResponse);
+                persistirPixImediato(pixImediato);
+            }
+
+            return jsonResponse;
+        } else {
+            LOG.error("Falha na consulta da cobrança Pix. Código: " + response.statusCode() + ", Resposta: "
+                    + response.body());
+            throw new RuntimeException("Falha na consulta da cobrança Pix. Código: " +
+                    response.statusCode() + ", Resposta: " + response.body());
+        }
     }
 
     /**
@@ -486,6 +785,59 @@ public class PixService {
         }
 
         return statusPagamento;
+    }
+
+    /**
+     * Consulta o status de uma cobrança Pix com vencimento na API do banco
+     * 
+     * @param txid ID da transação
+     * @return Objeto JSON com os dados atualizados da cobrança
+     * @throws Exception Se ocorrer algum erro na consulta
+     */
+    public JsonObject consultarCobrancaVencimentoNoServidor(String txid) throws Exception {
+        LOG.info("Consultando status da cobrança Pix com vencimento na API: " + txid);
+
+        // Obter token de acesso
+        String accessToken = tokenService.getAccessToken();
+
+        // Criar o cliente HTTP
+        HttpClient client = HttpClient.newBuilder()
+                .version(HttpClient.Version.HTTP_1_1)
+                .connectTimeout(Duration.ofSeconds(20))
+                .build();
+
+        // Adicionar o parâmetro gw-dev-app-key como query parameter
+        String urlCompleta = pixConfig.getPixBBVencimentoUrl() + txid + "?gw-dev-app-key=" + pixConfig.getAppKey();
+
+        // Construir a requisição HTTP
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(urlCompleta))
+                .header("Authorization", "Bearer " + accessToken)
+                .header("Accept", "application/json")
+                .GET()
+                .build();
+
+        // Enviar a requisição e obter a resposta
+        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+
+        if (response.statusCode() >= 200 && response.statusCode() < 300) {
+            JsonObject jsonResponse = new JsonObject(response.body());
+
+            // Atualizar objeto no banco de dados se ele existir
+            PixComVencimento pixVencimento = consultarCobrancaVencimentoRepository(txid);
+            if (pixVencimento != null) {
+                atualizarDadosPixVencimento(pixVencimento, jsonResponse);
+                persistirPixComVencimento(pixVencimento);
+            }
+
+            return jsonResponse;
+        } else {
+            LOG.error("Falha na consulta da cobrança Pix com vencimento. Código: " + response.statusCode()
+                    + ", Resposta: "
+                    + response.body());
+            throw new RuntimeException("Falha na consulta da cobrança Pix com vencimento. Código: " +
+                    response.statusCode() + ", Resposta: " + response.body());
+        }
     }
 
     /**
@@ -562,7 +914,7 @@ public class PixService {
             }
 
             String txid = resultado.getString("txid");
-            PixImediato pixImediato = consultarCobranca(txid);
+            PixImediato pixImediato = consultarCobrancaRepository(txid);
 
             // Criar novo registro se não existir
             if (pixImediato == null) {
@@ -634,7 +986,7 @@ public class PixService {
             }
 
             // Persistir as mudanças
-            persistirCobranca(pixImediato);
+            persistirPixImediato(pixImediato);
 
         } catch (Exception e) {
             LOG.error("Erro ao atualizar cache local com dados da API", e);
@@ -649,7 +1001,7 @@ public class PixService {
      */
     private void atualizarRegistroPagamento(String txid, JsonObject statusPagamento) {
         try {
-            PixImediato pixImediato = consultarCobranca(txid);
+            PixImediato pixImediato = consultarCobrancaRepository(txid);
 
             if (pixImediato == null) {
                 LOG.warn("Não foi possível atualizar registro de pagamento - cobrança não encontrada: " + txid);
@@ -671,10 +1023,191 @@ public class PixService {
             String infoPagador = statusPagamento.getString("infoPagador", "");
 
             pixImediato.registrarPagamento(endToEndId, valorPago, infoPagador);
-            persistirCobranca(pixImediato);
+            persistirPixImediato(pixImediato);
 
         } catch (Exception e) {
             LOG.error("Erro ao atualizar registro de pagamento", e);
         }
+    }
+
+    /**
+     * Atualiza ou cancela uma cobrança Pix com vencimento existente
+     * 
+     * @param txid          ID da transação
+     * @param pixVencimento Objeto com os dados atualizados
+     * @param cancelar      Flag indicando se deve cancelar a cobrança em vez de
+     *                      atualizá-la
+     * @return Resultado da operação
+     * @throws Exception Se ocorrer algum erro na atualização
+     */
+    @Transactional
+    public JsonObject atualizarCobrancaVencimento(String txid, PixComVencimento pixVencimento, boolean cancelar)
+            throws Exception {
+        LOG.info("Atualizando cobrança Pix com vencimento, TxID: " + txid);
+
+        // Verificar se a cobrança existe
+        PixComVencimento pixExistente = consultarCobrancaVencimentoRepository(txid);
+        if (pixExistente == null) {
+            throw new RuntimeException("Cobrança Pix com vencimento não encontrada: " + txid);
+        }
+
+        // Verificar se a cobrança já foi paga
+        if (pixExistente.isPaga()) {
+            throw new RuntimeException("Não é possível atualizar uma cobrança que já foi paga");
+        }
+
+        // Obter token de acesso
+        String accessToken = tokenService.getAccessToken();
+
+        // Criar o cliente HTTP
+        HttpClient client = HttpClient.newBuilder()
+                .version(HttpClient.Version.HTTP_1_1)
+                .connectTimeout(Duration.ofSeconds(20))
+                .build();
+
+        // Criar JSON para atualização ou cancelamento
+        JsonObject requestJson;
+
+        if (cancelar) {
+            // Para cancelar, enviamos apenas o status
+            requestJson = new JsonObject()
+                    .put("status", "REMOVIDA_PELO_USUARIO_RECEBEDOR");
+        } else {
+            // Para atualizar, enviamos todos os dados atualizados
+            requestJson = criarJsonCobrancaVencimento(pixVencimento);
+        }
+
+        // Adicionar o parâmetro gw-dev-app-key como query parameter
+        String urlCompleta = pixConfig.getPixBBVencimentoUrl() + txid + "?gw-dev-app-key=" + pixConfig.getAppKey();
+
+        // Construir a requisição HTTP (PATCH para atualizar parcialmente)
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(urlCompleta))
+                .header("Content-Type", "application/json")
+                .header("Authorization", "Bearer " + accessToken)
+                .header("Accept", "application/json")
+                .method("PATCH", HttpRequest.BodyPublishers.ofString(requestJson.encode()))
+                .build();
+
+        // Enviar a requisição e obter a resposta
+        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+        LOG.info("Resposta da API: " + response.statusCode() + " - " + response.body());
+
+        if (response.statusCode() >= 200 && response.statusCode() < 300) {
+            JsonObject jsonResponse = new JsonObject(response.body());
+
+            // Atualizar dados locais
+            if (cancelar) {
+                pixExistente.cancelar();
+                persistirPixComVencimento(pixExistente);
+            } else {
+                atualizarDadosPixVencimento(pixVencimento, jsonResponse);
+                persistirPixComVencimento(pixVencimento);
+            }
+
+            return jsonResponse;
+        } else {
+            LOG.error("Falha na atualização da cobrança Pix com vencimento. Código: " + response.statusCode()
+                    + ", Resposta: "
+                    + response.body());
+            throw new RuntimeException("Falha na atualização da cobrança Pix com vencimento. Código: " +
+                    response.statusCode() + ", Resposta: " + response.body());
+        }
+    }
+
+    /**
+     * Converte um objeto PixComVencimento para JSON para retorno na API
+     * 
+     * @param pix Objeto PixComVencimento
+     * @return Objeto JSON com os dados formatados
+     */
+    public JsonObject criarJsonDePixVencimento(PixComVencimento pix) {
+        JsonObject json = new JsonObject();
+
+        json.put("txid", pix.getTxid());
+        json.put("status", pix.getStatus());
+        json.put("chave", pix.getChave());
+        json.put("valor", pix.getValorOriginal().toString());
+        json.put("nome", pix.getNome());
+        json.put("tipoCob", "cobv");
+        json.put("dataVencimento", pix.getDataVencimento().toString());
+        json.put("validadeAposVencimento", pix.getValidadeAposVencimento());
+
+        if (pix.getCpf() != null && !pix.getCpf().isEmpty()) {
+            json.put("cpf", pix.getCpf());
+        }
+
+        if (pix.getCnpj() != null && !pix.getCnpj().isEmpty()) {
+            json.put("cnpj", pix.getCnpj());
+        }
+
+        // Incluir dados do endereço se disponíveis
+        if (pix.getLogradouro() != null && !pix.getLogradouro().isEmpty()) {
+            json.put("logradouro", pix.getLogradouro());
+
+            if (pix.getCidade() != null)
+                json.put("cidade", pix.getCidade());
+            if (pix.getUf() != null)
+                json.put("uf", pix.getUf());
+            if (pix.getCep() != null)
+                json.put("cep", pix.getCep());
+        }
+
+        if (pix.getEmail() != null) {
+            json.put("email", pix.getEmail());
+        }
+
+        json.put("criacao", pix.getCriacao().toString());
+
+        // Adicionar informações de multa e juros se disponíveis
+        if (pix.getMultaModalidade() != null && pix.getMultaValor() != null) {
+            JsonObject multa = new JsonObject()
+                    .put("modalidade", pix.getMultaModalidade())
+                    .put("valor", pix.getMultaValor().toString());
+            json.put("multa", multa);
+        }
+
+        if (pix.getJurosModalidade() != null && pix.getJurosValor() != null) {
+            JsonObject juros = new JsonObject()
+                    .put("modalidade", pix.getJurosModalidade())
+                    .put("valor", pix.getJurosValor().toString());
+            json.put("juros", juros);
+        }
+
+        if (pix.getAbatimentoModalidade() != null && pix.getAbatimentoValor() != null) {
+            JsonObject abatimento = new JsonObject()
+                    .put("modalidade", pix.getAbatimentoModalidade())
+                    .put("valor", pix.getAbatimentoValor().toString());
+            json.put("abatimento", abatimento);
+        }
+
+        if (pix.getDescontoModalidade() != null && pix.getDescontoValor() != null) {
+            JsonObject desconto = new JsonObject()
+                    .put("modalidade", pix.getDescontoModalidade())
+                    .put("valor", pix.getDescontoValor().toString());
+            json.put("desconto", desconto);
+        }
+
+        if (pix.getPixCopiaECola() != null) {
+            json.put("pixCopiaECola", pix.getPixCopiaECola());
+        }
+
+        if (pix.getLocation() != null) {
+            json.put("location", pix.getLocation());
+        }
+
+        if (pix.isPaga()) {
+            json.put("pago", true);
+            json.put("horarioPagamento", pix.getHorarioPagamento().toString());
+            json.put("valorPago", pix.getValorPago().toString());
+        } else {
+            json.put("pago", false);
+        }
+
+        if (pix.getSolicitacaoPagador() != null) {
+            json.put("solicitacaoPagador", pix.getSolicitacaoPagador());
+        }
+
+        return json;
     }
 }

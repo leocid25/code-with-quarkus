@@ -25,8 +25,11 @@ public class PixConfig {
     @ConfigProperty(name = "pix.banco-brasil.token-url")
     String tokenUrl;
     
-    @ConfigProperty(name = "pix.banco-brasil.pix-url")
-    String pixUrl;
+    @ConfigProperty(name = "pix.banco-brasil.pixImediato-url")
+    String pixBBImediatoUrl;
+
+    @ConfigProperty(name = "pix.banco-brasil.pixVencimento-url")
+    String pixBBVencimentoUrl;
     
     /**
      * Verifica se o ambiente é de produção
@@ -74,12 +77,22 @@ public class PixConfig {
     }
     
     /**
-     * Obtém a URL base da API Pix
+     * Obtém a URL base da API Pix imediato do Banco do Brasil
      * 
      * @return URL da API Pix
      */
-    public String getPixUrl() {
-        return pixUrl;
+    public String getPixBBImediatoUrl() {
+        return pixBBImediatoUrl;
+    }
+
+    /**
+     * Obtém a URL base da API Pix com vencimento do Banco do Brasil
+     * 
+     * @return URL da API Pix
+     */
+
+    public String getPixBBVencimentoUrl() {
+        return pixBBVencimentoUrl;
     }
     
     /**
