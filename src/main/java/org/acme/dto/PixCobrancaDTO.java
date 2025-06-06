@@ -32,6 +32,9 @@ public record PixCobrancaDTO(
 
     @Schema(description = "Tipo de Pix gerado", example = "cob ou cobv")
     String tipoCob,
+
+    @Schema(description = "Validade após vencimento", example = "30")
+    Integer validadeAposVencimento,
     
     @Schema(description = "Mensagem ao pagador", example = "Pagamento referente a compra #12345")
     String solicitacaoPagador

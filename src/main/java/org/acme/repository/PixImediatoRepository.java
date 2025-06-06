@@ -1,5 +1,10 @@
 package org.acme.repository;
 
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.stream.Collectors;
+
 import org.acme.model.PixImediato;
 
 import io.quarkus.hibernate.orm.panache.PanacheRepository;
@@ -31,5 +36,32 @@ public class PixImediatoRepository implements PanacheRepository<PixImediato> {
                 .getSingleResult();
 
         return maxId != null ? maxId : 0L;
+    }
+
+    /**
+     * Lista cobranças imediatas que expiram entre as datas especificadas
+     * 
+     * @param dataInicio Data inicial para filtro de expiração
+     * @param dataFim    Data final para filtro de expiração
+     * @return Lista de cobranças que expiram entre as datas especificadas
+     */
+    /**
+     * Lista cobranças imediatas que expiram entre as datas especificadas
+     */
+    public List<PixImediato> listarPorPeriodo(LocalDate dataInicio, LocalDate dataFim) {
+        // Busca todas as cobranças ativas
+        List<PixImediato> todasCobrancas = list("status = 'ATIVA'");
+
+        return todasCobrancas.stream()
+                .filter(pix -> {
+                    // Calcula quando a cobrança expira
+                    LocalDateTime dataExpiracao = pix.getCriacao().plusSeconds(pix.getExpiracao());
+                    LocalDate dataExpiracaoDate = dataExpiracao.toLocalDate();
+
+                    // Verifica se a data de expiração está no intervalo
+                    return !dataExpiracaoDate.isBefore(dataInicio) &&
+                            !dataExpiracaoDate.isAfter(dataFim);
+                })
+                .collect(Collectors.toList());
     }
 }

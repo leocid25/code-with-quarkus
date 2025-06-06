@@ -56,7 +56,6 @@ public class PixComVencimento extends Pix {
         super(txid, chave, valorOriginal, nome, cpf, cnpj);
         this.setTipoCob("cobv");
         this.dataVencimento = dataVencimento;
-        this.validadeAposVencimento = 30; // 30 dias por padrão
         this.setBanco(banco);
     }
     
@@ -76,7 +75,9 @@ public class PixComVencimento extends Pix {
                            String nome, String cpf, String cnpj, 
                            LocalDate dataVencimento, Integer validadeAposVencimento, String banco) {
         this(txid, chave, valorOriginal, nome, cpf, cnpj, dataVencimento, banco);
-        this.validadeAposVencimento = validadeAposVencimento;
+        // Se validadeAposVencimento for null, usa 30 como padrão
+        Integer validade = validadeAposVencimento;
+        this.validadeAposVencimento = (validade != null) ? validade : 30;
     }
     
     @Override

@@ -3,6 +3,7 @@ package org.acme.service;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.math.BigDecimal;
+import java.net.InetAddress;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -10,12 +11,14 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.UUID;
 
 import org.acme.config.PixConfig;
+import org.acme.model.Pix;
 import org.acme.model.PixComVencimento;
 import org.acme.model.PixImediato;
 import org.acme.model.PixInfoAdicional;
@@ -68,6 +71,19 @@ public class PixService {
     public JsonObject criarCobrancaPix(PixImediato pixImediato) throws Exception {
         LOG.info("Iniciando criação de cobrança Pix com TxID: " + pixImediato.getTxid());
 
+        // Testar conectividade antes de continuar
+        try {
+            InetAddress address = InetAddress.getByName("api.hm.bb.com.br");
+            boolean reachable = address.isReachable(5000);
+            LOG.info("Servidor api.hm.bb.com.br está acessível: " + reachable);
+            if (!reachable) {
+                LOG.warn("O servidor pode estar inacessível, mas continuando mesmo assim");
+            }
+        } catch (IOException e) {
+            LOG.error("Erro ao verificar conectividade: " + e.getMessage(), e);
+            // Continuar mesmo com erro de conectividade para ver o erro real
+        }
+
         // Obter token de acesso
         String accessToken = tokenService.getAccessToken();
         LOG.info("Access Token obtido com sucesso! " + accessToken);
@@ -75,7 +91,7 @@ public class PixService {
         // Criar o cliente HTTP
         HttpClient client = HttpClient.newBuilder()
                 .version(HttpClient.Version.HTTP_1_1)
-                .connectTimeout(Duration.ofSeconds(20))
+                .connectTimeout(Duration.ofSeconds(30))
                 .build();
 
         // Criar o JSON de cobrança PIX
@@ -485,37 +501,31 @@ public class PixService {
      */
     public String gerarTxid(String tipoCob, String codigoBanco) {
         // Gera um UUID sem hífens (32 caracteres hexadecimais)
-        String uuid = UUID.randomUUID().toString().replaceAll("-", "").toUpperCase().substring(0, 20); // 32 chars
+        String uuid = UUID.randomUUID().toString().replaceAll("-", "").toLowerCase();
         String prefixo;
         switch (tipoCob) {
             case "cob" -> {
                 // Prefixo fixo, pode ser seu identificador de sistema, por exemplo
-                prefixo = "COB" + codigoBanco + "I"; // Especifica o tipo de cobrança seguido pelo Banco
+                prefixo = "cob" + codigoBanco + "i"; // Especifica o tipo de cobrança seguido pelo Banco
             }
             case "cobv" -> {
                 // Prefixo fixo, pode ser seu identificador de sistema, por exemplo
-                prefixo = "COBV" + codigoBanco + "I"; // Especifica o tipo de cobrança seguido pelo Banco
+                prefixo = "cobv" + codigoBanco + "i"; // Especifica o tipo de cobrança seguido pelo Banco
             }
             default -> {
                 // Prefixo fixo, pode ser seu identificador de sistema, por exemplo
-                prefixo = "PIX"; // 3 caracteres
+                prefixo = "pix"; // 3 caracteres
             }
         }
 
         // Timestamp simples em base 36 (mais compacto e ainda único)
-        String timestamp = Long.toString(System.currentTimeMillis(), 36).toUpperCase(); // varia, ~8–9 chars
+        String timestamp = Long.toString(System.currentTimeMillis(), 36).toLowerCase(); // varia, ~8–9 chars
 
         // Junta tudo e remove o que passar dos 35 caracteres
         String raw = prefixo + uuid + timestamp; // pode ter mais de 35
 
         // Corta ou preenche para garantir exatamente 35 caracteres
-        if (raw.length() < 35) {
-            raw = raw + "0".repeat(35 - raw.length());
-        } else if (raw.length() > 35) {
-            raw = raw.substring(0, 35);
-        }
-
-        return raw;
+        return raw.length() > 35 ? raw.substring(0, 35) : String.format("%-35s", raw).replace(' ', '0');
     }
 
     /**
@@ -581,14 +591,24 @@ public class PixService {
      * @param dataFim    Data final de vencimento
      * @return Lista de cobranças
      */
-    public List<PixComVencimento> listarCobrancasVencimentoPorPeriodo(LocalDate dataInicio, LocalDate dataFim) {
+    public List<Pix> listarCobrancasVencimentoPorPeriodo(LocalDate dataInicio, LocalDate dataFim) {
 
         try {
-            // Chamar o método do repositório
-            List<PixComVencimento> cobrancas = pixComVencimentoRepository.listarProximasDoVencimento(dataInicio,
+            // Chamar o métodos do repositório
+            List<PixComVencimento> cobrancas = pixComVencimentoRepository.listarPorPeriodo(dataInicio,
+                    dataFim);
+            List<PixImediato> cobrancasI = pixImediatoRepository.listarPorPeriodo(dataInicio,
                     dataFim);
 
-            return cobrancas;
+            // Criar uma lista da classe pai Pix
+            List<Pix> todasCobrancas = new ArrayList<>();
+            todasCobrancas.addAll(cobrancas); // Adiciona todas as cobranças com vencimento
+            todasCobrancas.addAll(cobrancasI); // Adiciona todas as cobranças imediatas
+
+            // Ordenar por data de criação (mais recentes primeiro)
+            todasCobrancas.sort((a, b) -> b.getCriacao().compareTo(a.getCriacao()));
+
+            return todasCobrancas;
         } catch (Exception e) {
             LOG.error("Erro ao listar cobranças por período: " + e.getMessage(), e);
 
@@ -1348,6 +1368,89 @@ public class PixService {
             json.put("location", pix.getLocation());
         }
 
+        if (pix.isPaga()) {
+            json.put("pago", true);
+            json.put("horarioPagamento", pix.getHorarioPagamento().toString());
+            json.put("valorPago", pix.getValorPago().toString());
+        } else {
+            json.put("pago", false);
+        }
+
+        if (pix.getSolicitacaoPagador() != null) {
+            json.put("solicitacaoPagador", pix.getSolicitacaoPagador());
+        }
+
+        return json;
+    }
+
+    public JsonObject criarJsonDePix(Pix pix) {
+        JsonObject json = new JsonObject();
+
+        // Campos comuns
+        json.put("txid", pix.getTxid());
+        json.put("status", pix.getStatus());
+        json.put("chave", pix.getChave());
+        json.put("valor", pix.getValorOriginal().toString());
+        json.put("nome", pix.getNome());
+        json.put("criacao", pix.getCriacao().toString());
+
+        // Campos opcionais comuns
+        if (pix.getCpf() != null && !pix.getCpf().isEmpty()) {
+            json.put("cpf", pix.getCpf());
+        }
+        if (pix.getCnpj() != null && !pix.getCnpj().isEmpty()) {
+            json.put("cnpj", pix.getCnpj());
+        }
+
+        // Campos específicos por tipo
+        if (pix instanceof PixComVencimento pixVenc) {
+            json.put("tipoCob", "cobv");
+            json.put("dataVencimento", pixVenc.getDataVencimento().toString());
+            json.put("validadeAposVencimento", pixVenc.getValidadeAposVencimento());
+
+            // Adicionar informações de multa e juros se disponíveis
+            if (pixVenc.getMultaModalidade() != null && pixVenc.getMultaValor() != null) {
+                JsonObject multa = new JsonObject()
+                        .put("modalidade", pixVenc.getMultaModalidade())
+                        .put("valor", pixVenc.getMultaValor().toString());
+                json.put("multa", multa);
+            }
+
+            if (pixVenc.getJurosModalidade() != null && pixVenc.getJurosValor() != null) {
+                JsonObject juros = new JsonObject()
+                        .put("modalidade", pixVenc.getJurosModalidade())
+                        .put("valor", pixVenc.getJurosValor().toString());
+                json.put("juros", juros);
+            }
+
+            if (pixVenc.getAbatimentoModalidade() != null && pixVenc.getAbatimentoValor() != null) {
+                JsonObject abatimento = new JsonObject()
+                        .put("modalidade", pixVenc.getAbatimentoModalidade())
+                        .put("valor", pixVenc.getAbatimentoValor().toString());
+                json.put("abatimento", abatimento);
+            }
+
+            if (pixVenc.getDescontoModalidade() != null && pixVenc.getDescontoValor() != null) {
+                JsonObject desconto = new JsonObject()
+                        .put("modalidade", pixVenc.getDescontoModalidade())
+                        .put("valor", pixVenc.getDescontoValor().toString());
+                json.put("desconto", desconto);
+            }
+
+            if (pixVenc.getPixCopiaECola() != null) {
+                json.put("pixCopiaECola", pixVenc.getPixCopiaECola());
+            }
+
+            if (pixVenc.getLocation() != null) {
+                json.put("location", pixVenc.getLocation());
+            }
+
+        } else if (pix instanceof PixImediato pixImed) {
+            json.put("tipoCob", "cob");
+            json.put("expiracao", pixImed.getExpiracao());
+        }
+
+        // Campos comuns finais
         if (pix.isPaga()) {
             json.put("pago", true);
             json.put("horarioPagamento", pix.getHorarioPagamento().toString());

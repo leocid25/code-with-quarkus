@@ -48,7 +48,7 @@ public class PixComVencimentoRepository implements PanacheRepository<PixComVenci
      * @param dataFim    Data final para filtro
      * @return Lista de cobranças com vencimento entre as datas especificadas
      */
-    public List<PixComVencimento> listarProximasDoVencimento(LocalDate dataInicio, LocalDate dataFim) {
+    public List<PixComVencimento> listarPorPeriodo(LocalDate dataInicio, LocalDate dataFim) {
 
         // Usando a função list para buscar registros com data de vencimento entre as datas especificadas
         List<PixComVencimento> resultado = list("dataVencimento >= ?1 AND dataVencimento <= ?2", dataInicio, dataFim);

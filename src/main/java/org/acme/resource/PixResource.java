@@ -8,6 +8,7 @@ import org.acme.dto.ErrorResponseDTO;
 import org.acme.dto.PixCobrancaDTO;
 import org.acme.dto.PixPagamentoDTO;
 import org.acme.dto.PixPagamentoResponseDTO;
+import org.acme.model.Pix;
 import org.acme.model.PixComVencimento;
 import org.acme.model.PixImediato;
 import org.acme.service.PixService;
@@ -76,6 +77,7 @@ public class PixResource {
             String banco = pixData.banco();
             LocalDate dataVencimento = pixData.dataVencimento();
             Integer expiracao = pixData.expiracao();
+            Integer validadeAposVencimento = pixData.validadeAposVencimento();
 
             // Validar dados obrigatórios
             if (chave == null || valor.compareTo(BigDecimal.ZERO) <= 0 || nome == null) {
@@ -124,7 +126,7 @@ public class PixResource {
                 }
                 case "cobv" -> {
                     PixComVencimento pixComVencimento = new PixComVencimento(txid, chave, valor, nome, cpf, cnpj,
-                            dataVencimento, banco);
+                            dataVencimento, validadeAposVencimento, banco);
 
                     // Adicionar solicitação ao pagador se existir
                     if (pixData.solicitacaoPagador() != null && !pixData.solicitacaoPagador().isEmpty()) {
@@ -867,14 +869,19 @@ public class PixResource {
             LOG.info("Listando cobranças Pix com vencimento entre " + dataInicio + " e " + dataFim);
 
             // Obter cobranças no período através do serviço
-            List<PixComVencimento> cobrancas = pixService.listarCobrancasVencimentoPorPeriodo(dataInicio, dataFim);
+           // List<PixComVencimento> cobrancas = pixService.listarCobrancasVencimentoPorPeriodo(dataInicio, dataFim);
+            List<Pix> cobrancas = pixService.listarCobrancasVencimentoPorPeriodo(dataInicio, dataFim);
 
             // Transformar lista em array JSON
             JsonObject resultado = new JsonObject();
             JsonArray listaCobrancas = new JsonArray();
 
-            for (PixComVencimento pix : cobrancas) {
-                listaCobrancas.add(pixService.criarJsonDePixVencimento(pix));
+            // for (PixComVencimento pix : cobrancas) {
+            //     listaCobrancas.add(pixService.criarJsonDePixVencimento(pix));
+            // }
+
+            for (Pix pix : cobrancas) {
+                listaCobrancas.add(pixService.criarJsonDePix(pix));
             }
 
             resultado.put("quantidade", cobrancas.size());
